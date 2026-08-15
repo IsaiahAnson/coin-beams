@@ -64,6 +64,9 @@ local CFG = {
                          -- currently forced to 2 (engine BasicShapeMaterial, opaque,
                          -- cannot be invisible) to isolate geometry vs material issues
     RESWEEP_FRAMES = 1800, -- ~15s: periodic re-sweep for late-activating coins
+    RESWEEP_FAST = 240,  -- ~2-4s: used while sweeps keep finding coins the
+                         -- NotifyOnNewObject path missed (some UE4SS builds,
+                         -- e.g. the shimloader/manager one, never fire it)
     BRIGHTNESS  = 10.0,  -- value pushed into any discovered/likely scalar brightness param
 }
 
@@ -541,18 +544,51 @@ local function CatchUpSweep()
         S.sweepLogged = true
         Log("sweep: " .. table.concat(counts, ", ") .. " (" .. newSpots .. " new)")
     end
+    -- adaptive cadence: sweeps finding coins means the NotifyOnNewObject
+    -- instant path is not firing on this UE4SS build - sweep fast so beams
+    -- appear within a couple of seconds. Three clean sweeps in a row means
+    -- notifications are doing their job - back off to the calm cadence.
+    if newSpots > 0 then
+        S.cleanSweeps = 0
+        if S.sweepInterval ~= CFG.RESWEEP_FAST then
+            S.sweepInterval = CFG.RESWEEP_FAST
+            Log("notify path quiet - fast sweep mode (~3s)")
+        end
+    else
+        S.cleanSweeps = (S.cleanSweeps or 0) + 1
+        if S.cleanSweeps >= 3 and S.sweepInterval ~= CFG.RESWEEP_FRAMES then
+            S.sweepInterval = CFG.RESWEEP_FRAMES
+            Log("notify path healthy - calm sweep mode")
+        end
+    end
 end
 
--- Event-driven intake.
-for _, sc in ipairs(SPOT_CLASSES) do
-    pcall(function()
-        NotifyOnNewObject(sc.path, function(spot)
-            table.insert(S.queue,
-                { spot = spot, color = sc.color, mat = sc.mat,
-                  readyFrame = S.frame + CFG.QUEUE_DELAY })
+-- Event-driven intake. NotifyOnNewObject binds to the class OBJECT, which
+-- gets reinstanced on level travel - a registration from the previous level
+-- silently never fires again (diagnosed 2026-08-15: dropped coins only
+-- appeared via the 3s catch-up sweeps after the first map change). Track the
+-- class address and re-register whenever it changes (called at load and from
+-- the ClientRestart hook). Duplicate queue entries are harmless: the drain
+-- skips spots already in S.processed.
+local NotifyAddr = {}
+local function RegisterNotifies()
+    for _, sc in ipairs(SPOT_CLASSES) do
+        pcall(function()
+            local cls = StaticFindObject(sc.path)
+            if not (cls and cls:IsValid()) then return end
+            local addr = cls:GetAddress()
+            if NotifyAddr[sc.path] == addr then return end
+            NotifyAddr[sc.path] = addr
+            NotifyOnNewObject(sc.path, function(spot)
+                table.insert(S.queue,
+                    { spot = spot, color = sc.color, mat = sc.mat,
+                      readyFrame = S.frame + CFG.QUEUE_DELAY })
+            end)
+            Log("notify (re)registered for " .. sc.path:match("([%w_]+)$"))
         end)
-    end)
+    end
 end
+RegisterNotifies()
 
 -- Per-frame driver: known-good BP hook (runs on game thread).
 local Hooked = false
@@ -567,7 +603,7 @@ local function TryRegisterHook()
             -- (~15s) - LootBeacon showed 1.5s FindAllOf polling causes visible
             -- latency in this game.
             if (not S.sweepDone and S.frame >= CFG.SWEEP_WARMUP)
-               or (S.sweepDone and S.frame % CFG.RESWEEP_FRAMES == 0) then
+               or (S.sweepDone and S.frame % (S.sweepInterval or CFG.RESWEEP_FRAMES) == 0) then
                 S.sweepDone = true
                 local ok, err = pcall(CatchUpSweep)
                 if not ok then
@@ -603,6 +639,7 @@ EnsureHook()
 pcall(function()
     RegisterHook("/Script/Engine.PlayerController:ClientRestart", function(self)
         EnsureHook()
+        pcall(RegisterNotifies) -- rebind if the coin classes were reinstanced
         S.processed = {}
         S.queue = {}
         S.errCount = 0
