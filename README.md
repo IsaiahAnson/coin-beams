@@ -1,57 +1,66 @@
-# Coin Beams
+# CoinBeams
 
-**Borderlands/Diablo-style loot beams for Grain Rot.**
+**Loot beams for Grain Rot's coins** - inspired by the classic Borderlands / Diablo loot beam.
 
-Dropped valuables get a soft vertical shaft of light rising above them —
-**gold** beams over gold coins, **purple** beams over artifacts — visible
-across a dark room without dominating the scene. The beam is layered from
-dozens of concentric translucent cylinders for a smooth glow taper, topped
-with the game's own loot-glitter particles tinted to match and drifting up
-the beam.
+Every gold coin and artifact coin gets a soft, see-through pillar of light rising from it:
 
-No keybinds, no configuration needed in-game: beams appear automatically on
-every gold coin and artifact as levels load and as new loot spawns.
+- **Gold beams** on gold coins, **purple beams** on artifact coins
+- Smooth taper - wide soft glow at the coin, narrowing to a bright core that fades out with height
+- Beams always point straight up, no matter how a coin lands, tumbles, or flies
+- Subtle rising sparkles drift up along each beam (the game's own loot glitter, retinted)
+- Works on dispensed coins, enemy drops, chest and locker spawns, and dungeon loot piles
 
-## Installation (manual)
+Spot your loot across a dark room without hunting pixel by pixel.
 
-1. Install [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) — an
-   **experimental** build (v3.0.1-1021 or newer) — into
-   `Grain Rot\Helden\Binaries\Win64\`.
-2. Copy this package's `UE4SS_Signatures` folder into the `ue4ss` folder
-   (next to `UE4SS.dll`). **Required** — without these signature files UE4SS
-   crashes at startup on this game's engine version (UE 5.7).
-3. Copy `Mods\CoinBeams` into `ue4ss\Mods\`.
+## Brighter valuables
 
-The included `enabled.txt` activates the mod — no `mods.txt` editing needed.
+Coins get beams - but the **carryable valuables** (furniture, plants, pictures) only ever had the game's own sparse sparkle, so telling a Rare from an Epic meant flying into the sparkle and inspecting the item.
+
+Two things fix that, and neither one bolts geometry onto your loot:
+
+**The game's own sparkles, turned up.** Grain Rot scatters its rarity sparkle across each item's actual mesh surface, so it already sits correctly on a hanging picture. This mod amplifies that same effect rather than replacing it - **2.2x bigger sparkles**, a faster twinkle, and **two extra sparkle systems per item** for density.
+
+**A rarity light on each valuable** - **blue** for Rare, **purple** for Epic, **white** for Common. A light has no shape and no up-vector, so it reads the same on a floor prop, a tumbling item, or a picture on the wall. It never casts shadows, and the number of lights is capped per level.
+
+By default everything valuable is marked, commons included. Set `OUTLINE_MIN_QUALITY = 1` for Rare and Epic only, or `2` for Epic alone.
+
+## Install
+
+Use a mod manager (r2modman / Thunderstore app) - it handles everything.
+
+Manual install (UE4SS): copy `mod/CoinBeams` into your UE4SS `Mods` folder as `Mods/CoinBeams`, then add `CoinBeams : 1` to `Mods/mods.txt`.
 
 ## Multiplayer
 
-Purely visual and local: only players with the mod see beams. Modded and
-unmodded players join each other freely; nothing in the game files is
-modified.
+Purely client-side visuals. Only players with the mod see the beams; it changes nothing about gameplay, loot, or networking. Safe to use whether or not the host has it.
 
-## How it works
+## Tweaking
 
-- Each beam is a stack of thin engine-cylinder static meshes (81 layers,
-  widths tapering exponentially) attached to the coin, using an emissive
-  material via per-rarity dynamic material instances with HDR-boosted tint —
-  the bloom pass turns the additive stack into a soft glow core.
-- The material's tint parameter names are discovered at runtime by reading
-  the game's own pre-tinted material instances, so unknown names no-op
-  safely.
-- Zero polling: new loot is caught by object-creation notifications and
-  drained one per frame from a hook on the player's animation update, with a
-  single catch-up sweep per level plus a slow periodic re-sweep for
-  late-activating coins. Placed beams cost nothing per frame.
+All knobs live at the top of `Scripts/main.lua` in the `CFG` table:
 
-## Tuning
+| Setting | What it does |
+| --- | --- |
+| `LAYER_COUNT` | Beam smoothness (more concentric layers = smoother, costs more draws) |
+| `BASE_W` / `TIP_W` | Beam width at the bottom / top (cm) |
+| `BASE_H` / `TIP_H` | Beam height profile (cm) - `TIP_H` is the overall height |
+| `BOOST_LO` / `BOOST_HI` | Glow intensity of the outer haze / hot core |
+| `COLOR_RARE` / `COLOR_EPIC` | Beam colors (linear RGB) for gold / artifact coins |
+| `FX_SCALE`, `FX_SPEED`, `FX_LIFT` | Sparkle size, drift speed, and height |
+| `FX_LAYERS` | Glitter systems per coin (2 = twice the sparkles, desynced) |
+| `SPARKLE_SIZE_MULT` | How much bigger the game's item sparkles get (2.2) |
+| `SPARKLE_COPIES` | Extra sparkle systems per valuable (2) |
+| `SPARKLE_SPEED` | Twinkle rate of the item sparkles |
+| `ITEM_LIGHT` | Master switch for the rarity light |
+| `ITEM_LIGHT_RADIUS` / `ITEM_LIGHT_INTENSITY` | Light falloff (cm) and brightness |
+| `MAX_ITEM_LIGHTS` | Ceiling on lights per level |
+| `OUTLINE_MIN_QUALITY` | Lowest rarity that gets marked - `0` Common, `1` Rare, `2` Epic |
+| `OUTLINE_RARE` / `OUTLINE_EPIC` / `OUTLINE_COMMON` | Rarity colors (linear RGB) |
+| `ITEM_BEAMS` | Optional upright beam on valuables (off - misaligns on wall items) |
 
-All knobs live in the `CFG` table at the top of
-`Mods/CoinBeams/Scripts/main.lua` — beam height/width, per-rarity colors,
-HDR boost, sparkle size/speed. UE4SS hot reload (Ctrl+R, only while idle —
-never during a level transition) applies changes without restarting.
+## Performance note
+
+Each beam is a stack of translucent layers. On very large coin hoards this adds overdraw - if your framerate dips around big piles, lower `LAYER_COUNT` (27 still looks great).
 
 ## Credits
 
-Runs on [RE-UE4SS](https://github.com/UE4SS-RE/RE-UE4SS). Signature fixes
-from UE4SS issue #1228.
+Made by Mentalize.

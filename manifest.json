@@ -1,0 +1,9 @@
+{
+    "name": "CoinBeams",
+    "version_number": "1.2.1",
+    "website_url": "https://github.com/IsaiahAnson/coin-beams",
+    "description": "Loot beams for coins, plus a rarity light and boosted sparkles on every valuable - blue for Rare, purple for Epic - so you can read a room's loot at a glance. Client-side visuals.",
+    "dependencies": [
+        "Thunderstore-GrainRot_UE4SS-1.0.1"
+    ]
+}
