@@ -184,21 +184,35 @@ local CFG = {
     -- works identically on a floor prop, a hanging picture, or a tumbling item.
     -- One component each, never shadow-casting (shadowed lights are the
     -- expensive kind), capped hard after the v21.1 component-budget crash.
+    -- v31: treat any actor the game attaches its rarity sparkle to as a
+    -- valuable. Without this only AHeldenPhysTreasure actors were marked, so
+    -- sellable furniture - chairs, tables, paintings - got no light at all.
+    MARK_SPARKLING_ACTORS = true,
     ITEM_LIGHT        = true,
-    ITEM_LIGHT_RADIUS = 350,   -- cm falloff (v25: 220 -> 350)
-    -- v25: 24 -> 400 candelas. The v24 doubling changed nothing visible because
-    -- the light was registering as Static and contributing no lighting at all
-    -- (fixed via deferred creation below). With that fixed the value matters
-    -- again, and 24cd on a 220cm falloff was a dim bedside lamp.
-    ITEM_LIGHT_INTENSITY = 400.0,
+    -- 350 lit whole rooms; 200 still threw a ~2m pool across the floorboards;
+    -- 170 was closer. v28: halved again to 85 - the glow now sits on the item
+    -- rather than pooling on the floor around it.
+    ITEM_LIGHT_RADIUS = 85,    -- cm falloff
+    -- History, because the numbers here are misleading on their own: the
+    -- original 12/24cd looked like "no glow" only because the light was
+    -- registering as Static and contributing no lighting whatsoever (fixed via
+    -- deferred creation below). v25 then over-corrected to 400cd, which lit
+    -- entire rooms AND blew every rarity color out to white - a light that
+    -- clips its channels has no hue left. v30: 14 -> 3.5cd (another -75%). Well
+    -- below the original 12cd now; this is a faint tint on the item rather than
+    -- a light source, which is what repeated tuning has converged on.
+    ITEM_LIGHT_INTENSITY = 3.5,
     MAX_ITEM_LIGHTS   = 28,
 
     OUTLINE_OPACITY  = 0.85,  -- pushed into the glow material's own opacity param
     OUTLINE_HDR      = 4.0,   -- HDR multiplier on the tint, so bloom picks it up
     -- Colors follow the sparkle colors the game already uses for rarity.
-    OUTLINE_COMMON = { R = 0.75, G = 0.78, B = 0.85, A = 1.0 },  -- pale grey
-    OUTLINE_RARE   = { R = 0.10, G = 0.55, B = 1.00, A = 1.0 },  -- blue
-    OUTLINE_EPIC   = { R = 0.65, G = 0.15, B = 1.00, A = 1.0 },  -- purple
+    -- v26: saturated harder. These now drive a real light, and a light washes
+    -- toward white far more readily than a particle tint does, so the hues need
+    -- more headroom between channels to stay legible.
+    OUTLINE_COMMON = { R = 0.90, G = 0.92, B = 1.00, A = 1.0 },  -- white
+    OUTLINE_RARE   = { R = 0.02, G = 0.30, B = 1.00, A = 1.0 },  -- blue
+    OUTLINE_EPIC   = { R = 0.55, G = 0.03, B = 1.00, A = 1.0 },  -- purple
 
     -- sparkle density: extra copies of the glitter system per coin, desynced
     FX_LAYERS  = 2,
@@ -945,8 +959,93 @@ local function ScaleSparkleSizeCurves()
     if anyFound then G.curvesScaled = true end
 end
 
+-- v29: rarity tint for the sparkle copies.
+--
+-- The bug this fixes: a spawned copy of NS_RareProp_01 carries the SYSTEM
+-- DEFAULT color, which is the purple/Epic look. The game tints each item's own
+-- sparkle to its rarity, so Epic items looked correct by luck while Rare items
+-- got purple sparkles mixed into their blue, and Common items got purple/blue
+-- mixed into their white.
+--
+-- Rather than guess the rarity color from our own palette, read it off the
+-- item's EXISTING sparkle with UNiagaraComponent:GetVariableColor - that
+-- returns whatever the game itself set, so the copies match exactly even where
+-- our palette would not. The parameter name is data (FHeldenEffectColorParam is
+-- a generic Name/Value pair), so probe a candidate list once and remember the
+-- name that answers.
+local SPARKLE_COLOR_PARAMS = {
+    "Color", "User.Color", "VFXColor", "User.VFXColor",
+    "Tint", "User.Tint", "LootColor", "User.LootColor",
+    "SparkleColor", "User.SparkleColor", "RarityColor", "User.RarityColor",
+}
+
+-- Find the game's own sparkle component on this actor (never one of ours -
+-- our copies are recorded in G.fx as they are created).
+local function FindOriginalSparkle(actor, mesh)
+    local found = nil
+    local function scan(parent)
+        if found or not (parent and parent:IsValid()) then return end
+        pcall(function()
+            local kids = parent.AttachChildren
+            for i = 1, #kids do
+                local kid = kids[i]
+                if kid:IsValid() and kid:IsA("/Script/Niagara.NiagaraComponent") then
+                    local asset = kid.Asset
+                    if asset and asset:IsValid()
+                       and asset:GetFullName():find("NS_RareProp_01", 1, true)
+                       and not G.fx[kid:GetFullName()] then
+                        found = kid
+                        return
+                    end
+                end
+            end
+        end)
+    end
+    scan(mesh)
+    if not found then pcall(function() scan(actor:K2_GetRootComponent()) end) end
+    return found
+end
+
+-- Returns paramName, colorTable read from the game's own sparkle, or nil.
+--
+-- v30: the v29 probe required the bIsValid out-param to come back true and
+-- nothing ever did, so every item silently fell through to the palette spray -
+-- which uses the same unknown names and therefore did nothing either. Two
+-- changes: accept a name when it returns a non-black color even if the flag
+-- never lands (an unset Niagara parameter reads back as black), and LOG what
+-- every candidate actually returned so the real name is identifiable instead
+-- of guessed at.
+local function ReadSparkleRarityColor(original)
+    if not (original and original:IsValid()) then return nil end
+    -- once we know which parameter the game uses, stop probing the rest
+    local names = SPARKLE_COLOR_PARAMS
+    if G.sparkleColorParam then names = { G.sparkleColorParam } end
+    local report = {}
+    for _, n in ipairs(names) do
+        local col, valid = nil, nil
+        pcall(function()
+            -- out-param bIsValid: UE4SS lands out values in the FIRST table
+            -- passed, keyed by parameter name. It may also simply not land.
+            local flag = {}
+            col = original:GetVariableColor(FName(n), flag)
+            valid = flag.bIsValid
+        end)
+        if col then
+            local r, g, b = col.R or 0, col.G or 0, col.B or 0
+            table.insert(report, string.format("%s=%.2f/%.2f/%.2f%s",
+                n, r, g, b, valid and "(valid)" or ""))
+            if valid or (r + g + b) > 0.01 then
+                return n, col, report
+            end
+        else
+            table.insert(report, n .. "=nil")
+        end
+    end
+    return nil, nil, report
+end
+
 -- v23: extra copies of the game's own sparkle system on one item, for density.
-local function AddSparkleCopies(actor)
+local function AddSparkleCopies(actor, quality)
     if (CFG.SPARKLE_COPIES or 0) < 1 then return end
     if (G.copyCount or 0) >= CFG.MAX_SPARKLE_COPIES then return end
     -- same settle gate as the rest of the sparkle work: never spawn systems
@@ -965,18 +1064,29 @@ local function AddSparkleCopies(actor)
 
     -- Size-proportional copy count. Bigger mesh = more surface for the emitter
     -- to spread the same particles over = needs more systems to read as dense.
-    -- UE4SS out-params: pass tables; the values land in the FIRST table keyed
-    -- by param name (so extent arrives as origin.BoxExtent, not extent.X).
+    -- v26: measured off the STATIC MESH ASSET, not GetActorBounds. The actor
+    -- call is an out-param function and its values never landed in the Lua
+    -- tables (v25 logged "MEASURE FAILED" for every single item, so every item
+    -- silently kept the flat count - which is why big furniture never got the
+    -- extra sparkles). UStaticMesh.ExtendedBounds is a plain struct property:
+    -- a straight read, no out-params involved.
     local copies = CFG.SPARKLE_COPIES
     local measured = nil
     pcall(function()
-        local origin, extent = {}, {}
-        actor:GetActorBounds(false, origin, extent, false)
-        local e = origin.BoxExtent or extent.BoxExtent
+        local sm = mesh.StaticMesh
+        if not (sm and sm:IsValid()) then return end
+        local e = sm.ExtendedBounds.BoxExtent
         if not e then return end
+        -- asset bounds are in the mesh's own space - apply the component scale
+        -- so a scaled-up prop counts as the size it actually appears on screen
+        local sc = mesh:K2_GetComponentScale()
+        local sx = math.abs((sc and sc.X) or 1)
+        local sy = math.abs((sc and sc.Y) or 1)
+        local sz = math.abs((sc and sc.Z) or 1)
         -- average of the two largest axes: a wide flat picture and a tall thin
         -- vase both read as "big surface", while max alone over-rewards one axis
-        local a, b, c = math.abs(e.X or 0), math.abs(e.Y or 0), math.abs(e.Z or 0)
+        local a, b, c = math.abs(e.X or 0) * sx, math.abs(e.Y or 0) * sy,
+                        math.abs(e.Z or 0) * sz
         local hi1 = math.max(a, math.max(b, c))
         local lo1 = math.min(a, math.min(b, c))
         local mid = (a + b + c) - hi1 - lo1
@@ -1014,6 +1124,40 @@ local function AddSparkleCopies(actor)
         end
     end
 
+    -- Rarity tint, read off this item's OWN sparkle so the copies match the game
+    -- exactly. Falls back to our palette only if the read fails.
+    local original = FindOriginalSparkle(actor, mesh)
+    local paramName, tint, report = ReadSparkleRarityColor(original)
+    if paramName and not G.sparkleColorParam then
+        G.sparkleColorParam = paramName   -- same name on every item; probe once
+        Log(string.format("sparkle color param discovered: '%s' = %.2f/%.2f/%.2f",
+            paramName, tint.R or 0, tint.G or 0, tint.B or 0))
+    end
+
+    -- CORRECTNESS GATE: a copy spawned from the shared asset carries the system
+    -- default, which is the purple/Epic look. If we cannot tint it, adding it
+    -- would put purple sparkles on white and blue items - the exact bug being
+    -- fixed. Fewer sparkles is the better failure, so bail out instead.
+    if not paramName then
+        if not G.logged.tintFallback then
+            G.logged.tintFallback = true
+            Log("sparkle tint: cannot set the copies' color - skipping extra copies "
+                .. "so white/blue items keep their own sparkle color. "
+                .. "Only the game's own (correctly colored) sparkle is boosted.")
+            Log("sparkle color probe (original component): "
+                .. table.concat(report or {}, "  "))
+            if original and original:IsValid() then
+                pcall(function()
+                    Log("sparkle probe source: " .. original.Asset:GetFullName())
+                end)
+            else
+                Log("sparkle probe source: NO original sparkle component found on the item"
+                    .. " - that alone would explain the failed read")
+            end
+        end
+        return
+    end
+
     for i = 1, copies do
         -- stop mid-item if the level budget runs out
         if (G.copyCount or 0) >= CFG.MAX_SPARKLE_COPIES then break end
@@ -1021,6 +1165,11 @@ local function AddSparkleCopies(actor)
             { X = 0, Y = 0, Z = 0 }, { Pitch = 0, Yaw = 0, Roll = 0 },
             3, false, true, 0, false)
         if fx and fx:IsValid() then
+            -- Tint FIRST: a spawned copy carries the system default (purple),
+            -- which is what contaminated white and blue items before v29.
+            -- paramName is guaranteed non-nil here - the gate above returns
+            -- early rather than spawning a copy we cannot color.
+            pcall(function() fx:SetNiagaraVariableLinearColor(paramName, tint) end)
             -- desync so the copies twinkle independently instead of in lockstep
             pcall(function()
                 fx:SetCustomTimeDilation(CFG.SPARKLE_SPEED * speedMult * (1.0 + 0.3 * i))
@@ -1093,13 +1242,34 @@ local function BoostSparkleComponents()
                                    Z = CFG.SPARKLE_SCALE })
             c:SetCustomTimeDilation(CFG.SPARKLE_SPEED)
             boosted = boosted + 1
+
+            -- v31: mark this component's OWNER as a valuable.
+            --
+            -- Chairs, tables and paintings never got a rarity light because the
+            -- actor sweep only looked for AHeldenPhysTreasure - but most sellable
+            -- dungeon furniture is a plain construct actor, so it was never even
+            -- considered. Rather than widen the sweep to every construct in the
+            -- level (thousands, most of them scenery, and the caps would be spent
+            -- on whatever was found first), use the game's OWN signal: it attaches
+            -- this sparkle to exactly the props that are worth something. If it
+            -- sparkles, it is loot, so queue it. ApplyOutline still does the
+            -- quality checks and the caps still apply.
+            if CFG.MARK_SPARKLING_ACTORS then
+                local oKey = owner:GetFullName()
+                if not G.done[oKey] then
+                    table.insert(G.queue,
+                        { actor = owner, readyFrame = S.frame + CFG.QUEUE_DELAY })
+                    G.sparkOwners = (G.sparkOwners or 0) + 1
+                end
+            end
         end)
     end
     if boosted > 0 then
         G.fxCount = (G.fxCount or 0) + boosted
         if not G.logged.fx or G.fxCount % 25 == 0 then
             G.logged.fx = true
-            Log("sparkle systems boosted: " .. G.fxCount .. " total")
+            Log(string.format("sparkle systems boosted: %d total, %d sparkling actors queued",
+                G.fxCount, G.sparkOwners or 0))
         end
     end
 end
@@ -1172,22 +1342,34 @@ local function AddRarityLight(actor, quality)
     pcall(function() light:SetCastShadows(false) end)
     pcall(function() light:SetAttenuationRadius(CFG.ITEM_LIGHT_RADIUS) end)
     pcall(function() light:SetIntensity(CFG.ITEM_LIGHT_INTENSITY) end)
-    pcall(function() light:SetLightColor(c, true) end)  -- two arities exist;
-    pcall(function() light:SetLightColor(c) end)        -- wrong one no-ops
+    -- bSRGB=FALSE. SetLightColor runs the value through ToFColor(bSRGB), and
+    -- with sRGB encoding on, dark channels get lifted enormously (0.10 linear
+    -- becomes ~0.35), which desaturates every rarity toward white - that plus
+    -- 400cd of channel clipping is why v25 lit everything plain white.
+    -- Only ONE call: the old second, single-arg call re-ran the same function
+    -- with a garbage/defaulted flag and could undo the first.
+    pcall(function() light:SetLightColor(c, false) end)
     pcall(function() light:SetVisibility(true, false) end)
 
     G.lightCount = (G.lightCount or 0) + 1
 
     -- verify by reading the values back off the live component
     if G.lightCount <= 3 then
-        local mob, inten, rad, vis = "?", "?", "?", "?"
+        local mob, inten, rad, vis, col = "?", "?", "?", "?", "?"
         pcall(function() mob = tostring(light.Mobility) end)
         pcall(function() inten = tostring(light.Intensity) end)
         pcall(function() rad = tostring(light.AttenuationRadius) end)
         pcall(function() vis = tostring(light.bVisible) end)
+        -- read the color back: if this comes back as 255/255/255 on a Rare or
+        -- Epic item, the tint is not landing and the palette is not the problem
+        pcall(function()
+            local lc = light.LightColor
+            col = string.format("%d/%d/%d", lc.R, lc.G, lc.B)
+        end)
+        local qname = (quality == 2 and "Epic") or (quality == 1 and "Rare") or "Common"
         Log(string.format(
-            "RARITY LIGHT #%d built (finished=%s): mobility=%s (2=Movable) intensity=%s radius=%s visible=%s",
-            G.lightCount, tostring(finished), mob, inten, rad, vis))
+            "RARITY LIGHT #%d %s (finished=%s): mobility=%s (2=Movable) intensity=%s radius=%s visible=%s color=%s",
+            G.lightCount, qname, tostring(finished), mob, inten, rad, vis, col))
     end
 end
 
@@ -1209,7 +1391,7 @@ local function ApplyOutline(actor)
     -- the rarity light is the primary marker in v22 - cheap and alignment-proof
     pcall(AddRarityLight, actor, quality)
     -- v23: extra copies of the game's own sparkle for density on this item
-    pcall(AddSparkleCopies, actor)
+    pcall(AddSparkleCopies, actor, quality)
 
     -- hard ceiling: leave the rest unmarked rather than risk the level
     if G.count >= CFG.MAX_ITEM_MARKERS then
@@ -1427,6 +1609,7 @@ pcall(function()
         G.fx = {}
         G.fxCount = 0
         G.lightCount = 0
+        G.sparkOwners = 0
         G.copyCount = 0
         -- NB: G.curvesScaled is deliberately NOT reset. The size curves are
         -- multiplied in place on a shared asset that survives level travel;
@@ -1438,7 +1621,7 @@ pcall(function()
 end)
 
 Log(string.format(
-    "loaded v25 (settle gate %d frames; NS_RareProp size curve x%.1f, speed x%.1f, copies size-scaled %d@%.0fcm max %d/item cap %d; rarity light %s i=%.0fcd r=%.0f cap %d, deferred-Movable; item beams %s; min quality %d)",
+    "loaded v31 (sparkling actors marked; copies only when tintable; settle gate %d frames; NS_RareProp size curve x%.1f, speed x%.1f, copies size-scaled %d@%.0fcm max %d/item cap %d; rarity light %s i=%.0fcd r=%.0f cap %d, deferred-Movable; item beams %s; min quality %d)",
     CFG.SWEEP_WARMUP,
     CFG.SPARKLE_SIZE_MULT, CFG.SPARKLE_SPEED,
     CFG.SPARKLE_COPIES, CFG.SPARKLE_REF_EXTENT, CFG.SPARKLE_COPIES_MAX,

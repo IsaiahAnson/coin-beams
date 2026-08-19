@@ -1,3 +1,9 @@
+## 1.2.2
+
+- **Description corrected.** The package blurb claimed a rarity light and boosted sparkles "on every valuable", which overstated the mod. Beams are what CoinBeams adds, and they go on gold and artifact coins only.
+- **Carries the newer sparkle build** (internal v25 -> v31). 1.2.1 was packaged from an older copy of the script than the one in use; this ships the current one, including the sparkle-density work and a new `MARK_SPARKLING_ACTORS` switch.
+- Package no longer embeds a source-repo link.
+
 ## 1.2.1
 
 - **New icon.**
