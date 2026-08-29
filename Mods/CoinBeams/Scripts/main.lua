@@ -137,12 +137,17 @@ local CFG = {
     -- that often buys nothing once the level's props are already boosted.
     FX_SWEEP_EVERY    = 3,
     -- Per-component boosts on the live sparkle systems:
-    SPARKLE_SCALE     = 2.5,   -- component scale. NOTE (v23): this does NOT
+    -- v32: 2.5 -> 1.0. This never actually ran before (see the bRegistered
+    -- bugfix), and now that it does, scaling the component is the wrong lever:
+    -- this emitter samples the item's own mesh surface, so scaling it would
+    -- drag the sparkles off the item instead of enlarging them. Sparkle size
+    -- comes from the emitter size curve instead, which is already boosted.
+    SPARKLE_SCALE     = 1.0,   -- component scale. NOTE (v23): this does NOT
                                -- change sprite size here - the emitter is not in
                                -- local space, so component scale never reaches
                                -- the sprites. Kept because it costs nothing;
                                -- SPARKLE_SIZE_MULT below is the real size lever.
-    SPARKLE_SPEED     = 1.8,   -- time dilation - sparkle more often (this is what
+    SPARKLE_SPEED     = 3.2,   -- time dilation - sparkle more often (this is what
                                -- produced the frequency improvement in v22)
 
     -- v23 SIZE: the sprite renderer has no size property - particle size comes
@@ -158,7 +163,13 @@ local CFG = {
     -- NS_RareProp_01 samples the item's mesh through a StaticMesh data interface
     -- in AttachParent-style resolution, so an attached copy scatters over the
     -- same item correctly - including wall pictures.
-    SPARKLE_COPIES    = 2,     -- extra systems per item, for a REFERENCE-sized
+    -- v32: OFF. A copy spawned from the shared asset carries its default
+    -- (purple) look, and setting the Color parameter on the copy does NOT
+    -- override it - the probe can read Color back but writing it changes
+    -- nothing visible, which is why white and blue items kept showing purple
+    -- sparkles through v29-v31. Wrong colors are worse than fewer sparkles, so
+    -- density now comes only from the game's own correctly-colored sparkle.
+    SPARKLE_COPIES    = 0,     -- extra systems per item, for a REFERENCE-sized
                                -- prop (0 = off). Scaled per item below.
     -- v24: even out sparkle density across items. NS_RareProp_01 scatters its
     -- particles over the item's MESH SURFACE (its spawn script drives a static
@@ -192,7 +203,7 @@ local CFG = {
     -- 350 lit whole rooms; 200 still threw a ~2m pool across the floorboards;
     -- 170 was closer. v28: halved again to 85 - the glow now sits on the item
     -- rather than pooling on the floor around it.
-    ITEM_LIGHT_RADIUS = 85,    -- cm falloff
+    ITEM_LIGHT_RADIUS = 64,    -- cm falloff
     -- History, because the numbers here are misleading on their own: the
     -- original 12/24cd looked like "no glow" only because the light was
     -- registering as Static and contributing no lighting whatsoever (fixed via
@@ -201,8 +212,8 @@ local CFG = {
     -- clips its channels has no hue left. v30: 14 -> 3.5cd (another -75%). Well
     -- below the original 12cd now; this is a faint tint on the item rather than
     -- a light source, which is what repeated tuning has converged on.
-    ITEM_LIGHT_INTENSITY = 3.5,
-    MAX_ITEM_LIGHTS   = 28,
+    ITEM_LIGHT_INTENSITY = 1.75,
+    MAX_ITEM_LIGHTS   = 64,
 
     OUTLINE_OPACITY  = 0.85,  -- pushed into the glow material's own opacity param
     OUTLINE_HDR      = 4.0,   -- HDR multiplier on the tint, so bloom picks it up
@@ -213,6 +224,14 @@ local CFG = {
     OUTLINE_COMMON = { R = 0.90, G = 0.92, B = 1.00, A = 1.0 },  -- white
     OUTLINE_RARE   = { R = 0.02, G = 0.30, B = 1.00, A = 1.0 },  -- blue
     OUTLINE_EPIC   = { R = 0.55, G = 0.03, B = 1.00, A = 1.0 },  -- purple
+    -- v35: the fourth tier. EHeldenConstructQuality has exactly four values and
+    -- the SDK dump names #3 "BuiltConstruct", which read like player-placed
+    -- furniture - so every version until now threw it away. It is actually a
+    -- real loot tier: the game inspect panel calls it "Excellent" and gives it
+    -- its own pale-blue sparkle, distinct from Rare's blue. Matched here.
+    OUTLINE_EXCELLENT = { R = 0.45, G = 0.85, B = 1.00, A = 1.0 },  -- pale cyan-blue
+    -- Highest quality value that still counts as loot. 3 = include Excellent.
+    OUTLINE_MAX_QUALITY = 3,
 
     -- sparkle density: extra copies of the glitter system per coin, desynced
     FX_LAYERS  = 2,
@@ -729,9 +748,15 @@ local G = {
 }
 
 local function OutlineColorFor(quality)
+    if quality == 3 then return CFG.OUTLINE_EXCELLENT end
     if quality == 2 then return CFG.OUTLINE_EPIC end
     if quality == 1 then return CFG.OUTLINE_RARE end
     return CFG.OUTLINE_COMMON
+end
+
+local QUALITY_NAMES = { [0] = "Common", [1] = "Rare", [2] = "Epic", [3] = "Excellent" }
+local function QualityName(q)
+    return QUALITY_NAMES[q] or ("q" .. tostring(q))
 end
 
 -- Resolve the overlay material once. Preference: whatever the game itself
@@ -1189,12 +1214,26 @@ end
 local function BoostSparkleComponents()
     if not CFG.SPARKLE_ENABLED then return end
     local ok, comps = pcall(FindAllOf, "NiagaraComponent")
-    if not ok or not comps then return end
+    -- v33 instrumentation: "sparkle systems boosted" has never appeared in any
+    -- log, through two attempted fixes, so the failure is somewhere in this
+    -- filter chain rather than in one specific test. Count every drop-out stage
+    -- and sample the asset names actually present, then report once per level.
+    local D = { found = 0, junk = 0, noasset = 0, nomatch = 0, unreg = 0, dormant = 0,
+                noowner = 0, defowner = 0, boosted = 0, names = {}, nameN = 0 }
+    if not ok or not comps then
+        if not G.logged.sweepDiag then
+            G.logged.sweepDiag = true
+            Log("sparkle sweep: FindAllOf('NiagaraComponent') returned nothing"
+                .. " (ok=" .. tostring(ok) .. ") - no components to boost at all")
+        end
+        return
+    end
     local boosted = 0
     for _, c in ipairs(comps) do
         pcall(function()
             if not c:IsValid() then return end
             local key = c:GetFullName()
+            D.found = D.found + 1
             if G.fx[key] then return end
 
             -- HARDENING (v23.1 - this pass caused intermittent load crashes).
@@ -1208,29 +1247,64 @@ local function BoostSparkleComponents()
             if key:find("Default__") or key:find("GEN_VARIABLE")
                or key:find("ArchetypeObject") or key:find("MovieScene")
                or key:find("LS_", 1, true) then
+                D.junk = D.junk + 1
                 G.fx[key] = true
                 return
             end
 
             local asset = c.Asset
-            if not (asset and asset:IsValid()) then return end
+            if not (asset and asset:IsValid()) then D.noasset = D.noasset + 1 return end
             local an = asset:GetFullName()
             local match = false
             for _, n in ipairs(SPARKLE_SYSTEM_NAMES) do
                 if an:find(n, 1, true) then match = true; break end
             end
+            if D.nameN < 10 then
+                D.nameN = D.nameN + 1
+                D.names[D.nameN] = an:match("([^/%.]+)%.[^%.]+$") or an
+            end
+
             if not match then
+                D.nomatch = D.nomatch + 1
                 G.fx[key] = true   -- wrong system: never look at it again
                 return
             end
 
-            -- must be a registered component owned by a real, live actor
-            local registered = false
-            pcall(function() registered = (c.bRegistered == true) end)
-            if not registered then return end   -- not yet live; retry next sweep
+            -- Must be owned by a real, live actor.
+            --
+            -- v34: the old `bRegistered` gate is GONE. It rejected every single
+            -- matching component from v23.1 to v33 (the v33 census read
+            -- "unregistered=38, boosted=0" - those 38 were the real item
+            -- sparkles). The reason: bRegistered is NOT a reflected property -
+            -- it does not appear anywhere in the SDK dump - so the read returned
+            -- nil and no comparison against it could ever be true. v32's
+            -- "1 == true" theory was wrong; the value was never readable at all.
+            --
+            -- The crash hardening it was supposed to provide is actually done by
+            -- the junk-name filter above plus the owner checks below: class
+            -- defaults, archetypes and sequence templates have no live owner.
+            -- IsActive() is a soft extra check - if it is unavailable the pcall
+            -- leaves `active` true and we fall through to the owner test.
+            -- v37: the IsActive() gate is GONE.
+            --
+            -- It rejected 20-22 components on every sweep while `boosted` sat
+            -- stuck at 11. Niagara deactivates systems the player is not near,
+            -- so a sparkle on an unapproached item reads as inactive - and that
+            -- item then never got queued for a glow. It is exactly why a bench
+            -- stayed dark until it was grabbed: handling it woke the system, the
+            -- next sweep finally saw it, and the light appeared seconds later.
+            --
+            -- Dormant is not the same as invalid: these are real registered
+            -- world components. The junk-name filter above and the owner checks
+            -- below are what actually keep archetypes and templates out.
+            D.dormant = D.dormant + 1  -- counted for the census, no longer skipped
             local owner = c:GetOwner()
-            if not (owner and owner:IsValid()) then return end
-            if owner:GetFullName():find("Default__") then
+            if not (owner and owner:IsValid()) then D.noowner = D.noowner + 1 return end
+            local oname = owner:GetFullName()
+
+            if oname:find("Default__") or oname:find("GEN_VARIABLE")
+
+               or oname:find("ArchetypeObject") then
                 G.fx[key] = true
                 return
             end
@@ -1272,6 +1346,31 @@ local function BoostSparkleComponents()
                 G.fxCount, G.sparkOwners or 0))
         end
     end
+
+    -- v35: what rarities does this level actually contain? Confirms Excellent
+    -- (quality 3) items are now being marked instead of silently dropped.
+    if G.qHist and not G.logged.qHist and (G.count or 0) >= 8 then
+        G.logged.qHist = true
+        local parts = {}
+        for q = 0, 3 do
+            if G.qHist[q] then
+                table.insert(parts, QualityName(q) .. "=" .. G.qHist[q])
+            end
+        end
+        Log("rarities marked so far: " .. table.concat(parts, ", "))
+    end
+
+    -- v33: report the filter chain once per level. Whichever number is large is
+    -- the stage that has been silently eating every component since v23.1.
+    if not G.logged.sweepDiag and D.found > 0 then
+        G.logged.sweepDiag = true
+        Log(string.format(
+            "sparkle sweep census: seen=%d junk=%d noasset=%d wrongsystem=%d dormant-but-kept=%d noowner=%d boosted=%d",
+            D.found, D.junk, D.noasset, D.nomatch, D.dormant, D.noowner, boosted))
+        if D.nameN > 0 then
+            Log("sparkle sweep saw these systems: " .. table.concat(D.names, ", ", 1, D.nameN))
+        end
+    end
 end
 
 -- A rarity-colored point light on the item. No geometry, no orientation, so it
@@ -1284,18 +1383,20 @@ local function AddRarityLight(actor, quality)
     if not (lightClass and lightClass:IsValid()) then return end
 
     -- reprocess guard: a point light child means we already did this actor
-    local existing = false
-    pcall(function()
-        local kids = actor:K2_GetRootComponent().AttachChildren
-        for i = 1, #kids do
-            local kid = kids[i]
-            if kid:IsValid() and kid:IsA("/Script/Engine.PointLightComponent") then
-                existing = true
-                return
-            end
-        end
-    end)
-    if existing then return end
+    -- v36: dedupe on OUR OWN registry, not "does this actor own a point light".
+    --
+    -- The old test asked whether the actor already had any PointLightComponent
+    -- child and bailed if so. That is true for anything that is itself a lamp -
+    -- a Floor Light owns a point light for its bulb - so every light-emitting
+    -- valuable was skipped and never got a rarity glow, while the chair beside
+    -- it did. Lamps, TVs, candles and braziers were all affected.
+    --
+    -- Actors are destroyed and rebuilt on level travel and this registry is
+    -- cleared alongside the rest of the per-level state, so it cannot go stale.
+    local akey = actor:GetFullName()
+    G.litActors = G.litActors or {}
+    if G.litActors[akey] then return end
+    G.litActors[akey] = true
 
     local identity = {
         Rotation    = { X = 0, Y = 0, Z = 0, W = 1 },
@@ -1309,10 +1410,27 @@ local function AddRarityLight(actor, quality)
     -- bDeferredFinish=true lets us set mobility and all the light properties
     -- BEFORE registration, then FinishAddComponent registers it for real.
     local light = actor:AddComponentByClass(lightClass, true, identity, true)
+    -- v37: some actors return nothing from the deferred path. Retry immediately
+    -- with the simple non-deferred form before giving up - a light that is
+    -- Static-by-default is still far better than no light at all, and the
+    -- mobility write below is attempted either way.
+    local deferred = true
     if not (light and light:IsValid()) then
-        if not G.logged.lightFail then
-            G.logged.lightFail = true
-            Log("RARITY LIGHT: AddComponentByClass returned nothing - lights unavailable")
+        deferred = false
+        pcall(function()
+            light = actor:AddComponentByClass(lightClass, false, identity, false)
+        end)
+    end
+    if not (light and light:IsValid()) then
+        -- log per CLASS, not once globally, so we can see which item types
+        -- refuse a runtime light (small tables, paintings and beds are the
+        -- reported offenders)
+        local cls = akey:match("^([%w_]+)") or "item"
+        G.lightFailClasses = G.lightFailClasses or {}
+        if not G.lightFailClasses[cls] then
+            G.lightFailClasses[cls] = true
+            Log("RARITY LIGHT FAILED on " .. cls
+                .. " - both deferred and immediate AddComponentByClass returned nothing")
         end
         return
     end
@@ -1332,10 +1450,14 @@ local function AddRarityLight(actor, quality)
     pcall(function() light.CastShadows = false end)
     pcall(function() light.bAffectsWorld = true end)
 
-    -- register it
-    local finished = pcall(function()
-        actor:FinishAddComponent(light, false, identity)
-    end)
+    -- register it. Only the deferred path needs finishing - the fallback above
+    -- was created already-registered, and calling Finish on it would be wrong.
+    local finished = true
+    if deferred then
+        finished = pcall(function()
+            actor:FinishAddComponent(light, false, identity)
+        end)
+    end
 
     -- post-registration setters: these are the ones that mark the render state
     -- dirty, so the values above actually reach the renderer
@@ -1354,7 +1476,7 @@ local function AddRarityLight(actor, quality)
     G.lightCount = (G.lightCount or 0) + 1
 
     -- verify by reading the values back off the live component
-    if G.lightCount <= 3 then
+    if G.lightCount <= 10 or G.lightCount % 20 == 0 then
         local mob, inten, rad, vis, col = "?", "?", "?", "?", "?"
         pcall(function() mob = tostring(light.Mobility) end)
         pcall(function() inten = tostring(light.Intensity) end)
@@ -1366,10 +1488,10 @@ local function AddRarityLight(actor, quality)
             local lc = light.LightColor
             col = string.format("%d/%d/%d", lc.R, lc.G, lc.B)
         end)
-        local qname = (quality == 2 and "Epic") or (quality == 1 and "Rare") or "Common"
+        local qname = QualityName(quality)
         Log(string.format(
-            "RARITY LIGHT #%d %s (finished=%s): mobility=%s (2=Movable) intensity=%s radius=%s visible=%s color=%s",
-            G.lightCount, qname, tostring(finished), mob, inten, rad, vis, col))
+            "RARITY LIGHT #%d %s on %s (finished=%s): mobility=%s (2=Movable) intensity=%s radius=%s visible=%s color=%s",
+            G.lightCount, qname, (akey:match("^([%w_]+)") or "item"), tostring(finished), mob, inten, rad, vis, col))
     end
 end
 
@@ -1385,8 +1507,15 @@ local function ApplyOutline(actor)
     local quality = nil
     pcall(function() quality = tonumber(actor.ConstructQuality) end)
     if quality == nil then return true end          -- not a quality-bearing actor
-    if quality >= 3 then return true end            -- BuiltConstruct = player furniture
+    -- v35: was `quality >= 3 then return`. That silently dropped every
+    -- "Excellent" item - the fourth tier, which the SDK dump mislabels
+    -- BuiltConstruct. A floor light that inspects as Excellent and carries pale
+    -- blue sparkles got no glow purely because of this line.
+    if quality > CFG.OUTLINE_MAX_QUALITY then return true end
     if quality < CFG.OUTLINE_MIN_QUALITY then return true end
+    -- record what qualities actually exist in the level, for verification
+    G.qHist = G.qHist or {}
+    G.qHist[quality] = (G.qHist[quality] or 0) + 1
 
     -- the rarity light is the primary marker in v22 - cheap and alignment-proof
     pcall(AddRarityLight, actor, quality)
@@ -1431,7 +1560,7 @@ local function ApplyOutline(actor)
     if not markOk then return false end
 
     G.count = G.count + 1
-    local qname = (quality == 2 and "Epic") or (quality == 1 and "Rare") or "Common"
+    local qname = QualityName(quality)
     if G.count <= 8 or G.count % 25 == 0 then
         Log(string.format("valuable #%d: %s marked on %s",
             G.count, qname, name:match("^([%w_]+)") or "item"))
@@ -1610,6 +1739,11 @@ pcall(function()
         G.fxCount = 0
         G.lightCount = 0
         G.sparkOwners = 0
+
+        G.qHist = {}
+
+
+        G.litActors = {}
         G.copyCount = 0
         -- NB: G.curvesScaled is deliberately NOT reset. The size curves are
         -- multiplied in place on a shared asset that survives level travel;
@@ -1621,7 +1755,7 @@ pcall(function()
 end)
 
 Log(string.format(
-    "loaded v31 (sparkling actors marked; copies only when tintable; settle gate %d frames; NS_RareProp size curve x%.1f, speed x%.1f, copies size-scaled %d@%.0fcm max %d/item cap %d; rarity light %s i=%.0fcd r=%.0f cap %d, deferred-Movable; item beams %s; min quality %d)",
+    "loaded v37 (dormant sparkles kept + light fallback; copies off; settle gate %d frames; NS_RareProp size curve x%.1f, speed x%.1f, copies size-scaled %d@%.0fcm max %d/item cap %d; rarity light %s i=%.0fcd r=%.0f cap %d, deferred-Movable; item beams %s; min quality %d)",
     CFG.SWEEP_WARMUP,
     CFG.SPARKLE_SIZE_MULT, CFG.SPARKLE_SPEED,
     CFG.SPARKLE_COPIES, CFG.SPARKLE_REF_EXTENT, CFG.SPARKLE_COPIES_MAX,

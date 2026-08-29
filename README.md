@@ -1,70 +1,111 @@
-<img src="icon.png" width="128" align="right" alt="CoinBeams icon">
-
 # CoinBeams
 
 [**Get it on Thunderstore**](https://thunderstore.io/c/grain-rot/p/Mentalize/CoinBeams/)
 
-**Loot beams for Grain Rot's coins** - inspired by the classic Borderlands / Diablo loot beam.
+<img src="icon.png" width="120" align="right" alt="CoinBeams icon">
 
-Every gold coin and artifact coin gets a soft, see-through pillar of light rising from it:
+**Find the loot worth carrying, without hunting pixel by pixel.**
 
-- **Gold beams** on gold coins, **purple beams** on artifact coins
-- Smooth taper - wide soft glow at the coin, narrowing to a bright core that fades out with height
-- Beams always point straight up, no matter how a coin lands, tumbles, or flies
-- Subtle rising sparkles drift up along each beam (the game's own loot glitter, retinted)
-- Works on dispensed coins, enemy drops, chest and locker spawns, and dungeon loot piles
+Grain Rot marks valuable items with a small sparkle. It is easy to miss in a dark room, and telling a Rare from an Epic usually meant walking up to each one and inspecting it. CoinBeams makes the whole system readable at a glance.
 
-Spot your loot across a dark room without hunting pixel by pixel.
+---
 
-## Brighter valuables
+## What it does
 
-Coins get beams - but the **carryable valuables** (furniture, plants, pictures) only ever had the game's own sparse sparkle, so telling a Rare from an Epic meant flying into the sparkle and inspecting the item.
+**Loot beams on coins.** Every gold coin and artifact coin gets a soft, see-through pillar of light rising from it — gold beams on gold, purple on artifact. The beam always points straight up, however the coin lands, tumbles, or flies.
 
-Two things fix that, and neither one bolts geometry onto your loot:
+**A rarity glow under valuables.** Furniture, paintings, plants, lamps and treasures each get a small coloured light at their base, in the colour of their tier. A light has no shape and no up-vector, so it sits correctly on a hanging picture just as well as on a floor prop. It never casts shadows and the count is capped per level.
 
-**The game's own sparkles, turned up.** Grain Rot scatters its rarity sparkle across each item's actual mesh surface, so it already sits correctly on a hanging picture. This mod amplifies that same effect rather than replacing it - **2.2x bigger sparkles**, a faster twinkle, and **two extra sparkle systems per item** for density.
+**Brighter sparkles.** The game's own rarity sparkle is amplified rather than replaced — bigger and faster, still scattered across the item's own surface, still in the game's own colours.
 
-**A rarity light on each valuable** - **blue** for Rare, **purple** for Epic, **white** for Common. A light has no shape and no up-vector, so it reads the same on a floor prop, a tumbling item, or a picture on the wall. It never casts shadows, and the number of lights is capped per level.
+---
 
-By default everything valuable is marked, commons included. Set `OUTLINE_MIN_QUALITY = 1` for Rare and Epic only, or `2` for Epic alone.
+## Rarity colours
+
+| Tier | Colour |
+|---|---|
+| Common | White |
+| Rare | Blue |
+| Excellent | Pale cyan-blue |
+| Epic | Purple |
+
+All four tiers are marked by default.
+
+---
+
+## Multiplayer and safety
+
+Purely **client-side visuals**. Nothing is replicated, no gameplay value is changed, and friends do not need the mod installed. Lights never cast shadows, particle work is capped and spread across frames, and all cosmetic work waits for the level to finish streaming before it runs.
+
+---
+
+## Configuration
+
+Open `Scripts/main.lua` and edit the `CFG` block at the top.
+
+| Setting | What it does |
+|---|---|
+| `ITEM_LIGHT` | Master switch for the rarity glow |
+| `ITEM_LIGHT_INTENSITY` | Glow brightness in candelas |
+| `ITEM_LIGHT_RADIUS` | How far the glow reaches, in cm |
+| `MAX_ITEM_LIGHTS` | Ceiling on lights per level |
+| `OUTLINE_MIN_QUALITY` | Lowest tier that gets marked — `0` Common, `1` Rare, `2` Epic |
+| `OUTLINE_MAX_QUALITY` | Highest tier that counts as loot — `3` includes Excellent |
+| `OUTLINE_COMMON` / `OUTLINE_RARE` / `OUTLINE_EXCELLENT` / `OUTLINE_EPIC` | Tier colours |
+| `SPARKLE_SPEED` | Twinkle rate of the item sparkles |
+| `SPARKLE_SIZE_MULT` | Sparkle size |
+| `ITEM_BEAMS` | Optional upright beam on valuables (off — it misaligns on wall-mounted items) |
+| `LAYER_COUNT`, `BASE_H`, `TIP_H` | Coin beam shape and height |
+
+---
 
 ## Install
 
-Use a mod manager (r2modman / Thunderstore app) - it handles everything.
+Use a mod manager — it handles the dependency and the file layout for you.
 
-Manual install (UE4SS): copy `mod/CoinBeams` into your UE4SS `Mods` folder as `Mods/CoinBeams`, then add `CoinBeams : 1` to `Mods/mods.txt`.
+---
 
-## Multiplayer
+## Version catalog
 
-Purely client-side visuals. Only players with the mod see the beams; it changes nothing about gameplay, loot, or networking. Safe to use whether or not the host has it.
+### 1.3.1
+- **Lamp-type valuables now get their glow.** Floor lights, lamps and anything else that emits light were skipped entirely — the check that prevents double-lighting asked whether the item already owned a light component, which is true of every lamp by definition. It now tracks only the lights this mod adds.
+- **Items no longer need to be approached or nudged first.** The game puts particle systems to sleep when you are not near them, and sleeping sparkles were being ignored, so an item stayed dark until you walked up to it or picked it up. A room now lights up as you enter it.
+- Added a fallback for items that refuse a light on the first attempt, and raised the per-level light ceiling from 28 to 64 now that far more valuables are found.
+- New icon.
 
-## Tweaking
+### 1.3.0
+- **Excellent tier now supported.** The game has a fourth rarity above Epic that inspects as "Excellent" and carries its own pale-blue sparkle. Every earlier version discarded those items outright, so they never got a glow. They are now marked in their own colour.
+- **Furniture is marked properly.** Chairs, tables, paintings, floor lamps and plant pots were being skipped because the mod only looked for treasure-class objects. It now treats anything the game attaches its rarity sparkle to as loot, which covers every sellable prop type.
+- **The sparkle boost actually applies.** A component test was checking a property that does not exist, so the pass that enlarges and speeds up the game's own sparkles had never once run. Sparkles are now noticeably livelier.
+- Glow retuned much softer after testing — it marks the item without lighting the room.
+- Sparkle colours are correct on every tier. Extra sparkle copies are no longer added, because a spawned copy keeps the shared effect's purple tint regardless of colour settings and contaminated white and blue items.
 
-All knobs live at the top of `Scripts/main.lua` in the `CFG` table:
+### 1.2.2
+- Description corrected to match what the mod actually does.
 
-| Setting | What it does |
-| --- | --- |
-| `LAYER_COUNT` | Beam smoothness (more concentric layers = smoother, costs more draws) |
-| `BASE_W` / `TIP_W` | Beam width at the bottom / top (cm) |
-| `BASE_H` / `TIP_H` | Beam height profile (cm) - `TIP_H` is the overall height |
-| `BOOST_LO` / `BOOST_HI` | Glow intensity of the outer haze / hot core |
-| `COLOR_RARE` / `COLOR_EPIC` | Beam colors (linear RGB) for gold / artifact coins |
-| `FX_SCALE`, `FX_SPEED`, `FX_LIFT` | Sparkle size, drift speed, and height |
-| `FX_LAYERS` | Glitter systems per coin (2 = twice the sparkles, desynced) |
-| `SPARKLE_SIZE_MULT` | How much bigger the game's item sparkles get (2.2) |
-| `SPARKLE_COPIES` | Extra sparkle systems per valuable (2) |
-| `SPARKLE_SPEED` | Twinkle rate of the item sparkles |
-| `ITEM_LIGHT` | Master switch for the rarity light |
-| `ITEM_LIGHT_RADIUS` / `ITEM_LIGHT_INTENSITY` | Light falloff (cm) and brightness |
-| `MAX_ITEM_LIGHTS` | Ceiling on lights per level |
-| `OUTLINE_MIN_QUALITY` | Lowest rarity that gets marked - `0` Common, `1` Rare, `2` Epic |
-| `OUTLINE_RARE` / `OUTLINE_EPIC` / `OUTLINE_COMMON` | Rarity colors (linear RGB) |
-| `ITEM_BEAMS` | Optional upright beam on valuables (off - misaligns on wall items) |
+### 1.2.1
+- New icon.
+- Rarity light brightness doubled.
+- Sparkle density scaled to each item's measured size, so a large item reads as clearly as a small one.
 
-## Performance note
+### 1.2.0
+- Found the real item sparkle effect — earlier versions had been enhancing the coin effect, which is why item sparkles never changed.
+- Item sparkles enhanced directly, so they stay glued to the item's surface and align correctly on wall-mounted pictures.
+- Added the rarity light.
+- Item beams turned off by default; they sprouted out of picture frames.
+- Fixed an intermittent crash on loading in.
 
-Each beam is a stack of translucent layers. On very large coin hoards this adds overdraw - if your framerate dips around big piles, lower `LAYER_COUNT` (27 still looks great).
+### 1.1.2
+- Fixed a crash on load caused by building far too much geometry per item.
+- Item markers made much smaller; the old ones punched through ceilings.
 
-## Credits
+### 1.1.1
+- Valuables given a rarity-coloured marker.
+- Common items included alongside Rare and Epic.
 
-Made by Mentalize.
+### 1.1.0
+- First pass at marking valuables by rarity.
+- Bigger, faster coin sparkles.
+
+### 1.0.2
+- Beams on freshly dropped coins now appear instantly instead of seconds late.

@@ -1,3 +1,18 @@
+## 1.3.1
+
+- **Lamp-type valuables now get their glow.** Floor lights, lamps and anything else that emits light were skipped entirely: the check that prevents double-lighting asked whether the item already owned a light component, which is true of every lamp by definition. It now tracks only the lights this mod adds.
+- **Items no longer need to be approached or nudged first.** The game puts particle systems to sleep when you are not near them, and sleeping sparkles were being ignored, so an item stayed dark until you walked up to it or picked it up. Dormant sparkles are now included, and a room lights up as you enter it.
+- Added a fallback for items that refuse a light on the first attempt, and raised the per-level light ceiling from 28 to 64 now that far more valuables are found.
+- New icon.
+
+## 1.3.0
+
+- **Excellent tier now supported.** The game has a fourth rarity that inspects as "Excellent" and carries its own pale-blue sparkle. Every earlier version discarded those items outright, so they never got a glow. They are now marked in their own colour.
+- **Furniture is marked properly.** Chairs, tables, paintings, floor lamps and plant pots were skipped because the mod only looked for treasure-class objects. It now treats anything the game attaches its rarity sparkle to as loot, which covers every sellable prop type.
+- **The sparkle boost actually applies.** A component test checked a property that does not exist, so the pass that enlarges and speeds up the game's own sparkles had never once run.
+- Glow retuned much softer after testing - it marks the item without lighting the room.
+- Sparkle colours are correct on every tier. Extra sparkle copies are no longer added: a spawned copy keeps the shared effect's purple tint regardless of colour settings, which contaminated white and blue items.
+
 ## 1.2.2
 
 - **Description corrected.** The package blurb claimed a rarity light and boosted sparkles "on every valuable", which overstated the mod. Beams are what CoinBeams adds, and they go on gold and artifact coins only.
