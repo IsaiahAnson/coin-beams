@@ -1,4 +1,8 @@
+<img src="icon.png" width="128" align="right" alt="CoinBeams icon">
+
 # CoinBeams
+
+[**Get it on Thunderstore**](https://thunderstore.io/c/grain-rot/p/Mentalize/CoinBeams/)
 
 **Loot beams for Grain Rot's coins** - inspired by the classic Borderlands / Diablo loot beam.
 
