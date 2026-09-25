@@ -109,3 +109,9 @@ Use a mod manager — it handles the dependency and the file layout for you.
 
 ### 1.0.2
 - Beams on freshly dropped coins now appear instantly instead of seconds late.
+
+## License
+
+Copyright (c) 2026 Isaiah Anson. All rights reserved. You may use the released software for
+personal, non-commercial use; copying, modifying or redistributing it requires written
+permission. See [LICENSE](LICENSE).
